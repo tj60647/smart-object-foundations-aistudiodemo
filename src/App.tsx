@@ -8,8 +8,8 @@
 // License: MIT — see LICENSE in the root of this repository
 // =============================================================================
 //
-// Root React component. Owns all top-level UI state and communicates with the
-// Express back-end to persist and display reading history.
+// Root React component. Owns all top-level UI state and persists reading
+// history to localStorage (via storage.ts).
 //
 // LAYOUT OVERVIEW
 // ---------------
@@ -24,14 +24,15 @@
 // ---------
 //   HeartbeatMonitor detects a peak → calls onDataUpdate(bpm, confidence, stressScore)
 //     → App updates signal state → re-renders stat cards
-//     → App randomly persists (5 % chance per peak) via POST /api/readings
-//     → App refreshes history list via GET /api/history
+//     → App randomly persists (5 % chance per peak) via saveReading() → localStorage
+//     → History list re-renders from the returned updated array
 
 import React, { useState, useEffect } from 'react';
 import { HeartbeatMonitor } from './components/HeartbeatMonitor';
 import { Heart, Activity, Brain, History, Info, TrendingUp, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { HeartbeatReading, SignalState } from './types';
+import { loadHistory, saveReading } from './storage';
 
 // =============================================================================
 // HELPERS
@@ -63,8 +64,7 @@ const getStressLevel = (score: number): { label: string; color: string; bg: stri
  * Root application component.
  *
  * Manages WebSerial connection state (via callbacks from {@link HeartbeatMonitor}),
- * live signal metrics, and the persistent reading history loaded from the
- * Express API.
+ * live signal metrics, and the reading history persisted in localStorage.
  */
 export default function App() {
   /** Live biometric signal state updated on every detected heartbeat peak. */
@@ -76,42 +76,27 @@ export default function App() {
     status: "Not connected",
   });
 
-  /** Most-recent readings fetched from `GET /api/history`. */
+  /** Reading history loaded from localStorage (newest first). */
   const [history, setHistory] = useState<HeartbeatReading[]>([]);
 
   /** Controls whether the full-screen history overlay is visible. */
   const [showHistory, setShowHistory] = useState(false);
 
-  // Load history on first render.
+  // Load history from localStorage on first render.
   useEffect(() => {
-    fetchHistory();
+    setHistory(loadHistory());
   }, []);
 
   // ---------------------------------------------------------------------------
-  // API
-  // ---------------------------------------------------------------------------
-
-  /** Fetches the 100 most-recent readings from the Express back-end. */
-  const fetchHistory = async () => {
-    try {
-      const res = await fetch('/api/history');
-      const data = await res.json();
-      setHistory(data);
-    } catch (err) {
-      console.error("Failed to fetch history", err);
-    }
-  };
-
-  // ---------------------------------------------------------------------------
-  // Callbacks passed to HeartbeatMonitor
+  // History persistence (localStorage)
   // ---------------------------------------------------------------------------
 
   /**
    * Called by {@link HeartbeatMonitor} on every newly detected heartbeat peak.
-   * Updates the live stat cards and — with a 5 % probability — persists the
-   * reading to the database and refreshes the history list.
+   * Updates the live stat cards and — with a 5 % probability — saves the
+   * reading to localStorage and updates the history list.
    *
-   * The probabilistic save rate (~5 readings per 100 peaks) keeps the database
+   * The probabilistic save rate (~5 readings per 100 peaks) keeps localStorage
    * from filling up during a long session while still producing a meaningful
    * trend over time.
    *
@@ -119,23 +104,18 @@ export default function App() {
    * @param confidence  - Signal confidence (0.0–1.0).
    * @param stressScore - Stress index (0–100).
    */
-  const handleDataUpdate = async (bpm: number, confidence: number, stressScore: number) => {
+  const handleDataUpdate = (bpm: number, confidence: number, stressScore: number) => {
     setSignal(prev => ({ ...prev, bpm, confidence, stressScore }));
 
-    // Save to back-end occasionally to avoid flooding the database.
+    // Save occasionally to avoid flooding localStorage.
     if (Math.random() > 0.95 && bpm > 0) {
-      try {
-        await fetch('/api/readings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bpm, confidence, stressScore }),
-        });
-        fetchHistory();
-      } catch (err) {
-        console.error("Failed to save reading", err);
-      }
+      setHistory(saveReading(bpm, confidence, stressScore));
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // Callbacks passed to HeartbeatMonitor
+  // ---------------------------------------------------------------------------
 
   /**
    * Called by {@link HeartbeatMonitor} whenever the WebSerial connection state

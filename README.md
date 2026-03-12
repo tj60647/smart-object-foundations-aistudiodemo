@@ -4,6 +4,11 @@
 
 # Smart Object Foundations — AI Studio Demo
 
+[![Deploy to GitHub Pages](https://github.com/tj60647/smart-object-foundations-aistudiodemo/actions/workflows/deploy.yml/badge.svg)](https://github.com/tj60647/smart-object-foundations-aistudiodemo/actions/workflows/deploy.yml)
+
+**🔴 Live demo:** [tj60647.github.io/smart-object-foundations-aistudiodemo](https://tj60647.github.io/smart-object-foundations-aistudiodemo/)  
+> Requires Chrome or Edge (WebSerial API). Connect your ESP32 + PulseSensor to try the full pipeline.
+
 ## About This Repository
 
 This repository is an **AI Studio demo** that extends [Smart Object Foundations](https://github.com/tj60647/smart-object-foundations) — a project in the MDes Prototyping course at CCA.
@@ -29,7 +34,7 @@ fingertip → PulseSensor → ESP32 analogRead() → Serial → WebSerial → Re
                                                                          ↓
                                                            stress score (HRV + BPM analysis)
                                                                          ↓
-                                                           reading saved to SQLite via Express
+                                                           reading saved to localStorage
 ```
 
 ### The Signal Processing Pipeline
@@ -50,8 +55,8 @@ A **stress score** is layered on top: it combines the normalised BPM factor (hig
 
 | Stage 3 (p5.js sketch) | This Demo (React + TypeScript) |
 |---|---|
-| Standalone browser sketch | Full-stack app: Express server + React SPA |
-| In-memory state only | Persistent SQLite history via `/api/readings` |
+| Standalone browser sketch | Deployable static SPA on GitHub Pages |
+| In-memory state only | Persistent history via `localStorage` (survives page reloads) |
 | Canvas rendered by p5.js | Canvas rendered by `requestAnimationFrame` loop in React |
 | No stress analysis | Stress score derived from BPM + HRV coefficient of variation |
 | Plain JavaScript | TypeScript with TSDoc comments |
@@ -93,33 +98,49 @@ The sketch sends lines formatted as `timestamp,value` over Serial at 115200 baud
    ```
    npm install
    ```
-2. Set the `GEMINI_API_KEY` in [`.env.local`](.env.local) to your Gemini API key
-3. Run the app:
+2. Run the app:
    ```
    npm run dev
    ```
-4. Open [http://localhost:3000](http://localhost:3000) in Chrome or Edge
-5. Click **Connect Sensor**, select the ESP32 serial port, and place your fingertip on the PulseSensor
+3. Open [http://localhost:3000](http://localhost:3000) in Chrome or Edge
+4. Click **Connect Sensor**, select the ESP32 serial port, and place your fingertip on the PulseSensor
 
 The canvas will show two traces:
 - **Cyan (top)** — raw 12-bit ADC signal from the ESP32
 - **Amber (bottom)** — baseline-subtracted, smoothed signal with red tick marks at each detected beat
+
+> **Note:** The local dev server also starts an Express back-end on port 3000. History is persisted in your browser's `localStorage` regardless of whether you run locally or use the live GitHub Pages URL.
+
+---
+
+## GitHub Pages
+
+The app is automatically built and deployed to:  
+**https://tj60647.github.io/smart-object-foundations-aistudiodemo/**
+
+Every push to `main` triggers the workflow in `.github/workflows/deploy.yml`. The static build uses `VITE_BASE_PATH=/smart-object-foundations-aistudiodemo/` to set correct asset URLs for the project-page URL structure.
+
+To enable GitHub Pages for this repository: **Settings → Pages → Source → GitHub Actions**.
 
 ---
 
 ## Project Structure
 
 ```
-server.ts                  ← Express server: /api/readings (POST) + /api/history (GET)
+.github/
+  workflows/
+    deploy.yml             ← GitHub Actions: build + deploy to GitHub Pages
+server.ts                  ← Express server (local dev only): /api/readings + /api/history
 src/
   main.tsx                 ← React entry point
   App.tsx                  ← Root component: layout, stat cards, history overlay
   types.ts                 ← Shared TypeScript interfaces
+  storage.ts               ← localStorage helpers: loadHistory() + saveReading()
   components/
     HeartbeatMonitor.tsx   ← WebSerial + signal processing + Canvas visualisation
   index.css                ← Tailwind v4 + font imports
 index.html                 ← HTML entry point
-vite.config.ts             ← Vite + React + Tailwind plugins
+vite.config.ts             ← Vite + React + Tailwind plugins; VITE_BASE_PATH support
 tsconfig.json              ← TypeScript configuration
 ```
 
