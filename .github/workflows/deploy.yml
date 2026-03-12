@@ -1,0 +1,86 @@
+# =============================================================================
+# File:    deploy.yml
+# Project: Smart Object Foundations — MDes Prototyping, CCA
+# Demo:    AI Studio — Heartbeat Detection + Stress Analysis
+#
+# Authors: Copilot
+#          Thomas J McLeish
+# License: MIT — see LICENSE in the root of this repository
+# =============================================================================
+#
+# Builds the Vite SPA and deploys it to GitHub Pages on every push to main.
+#
+# Live URL: https://tj60647.github.io/smart-object-foundations-aistudiodemo/
+#
+# HOW IT WORKS
+# ------------
+# 1. Check out the repository
+# 2. Install Node.js 20 (LTS) and restore the npm cache
+# 3. Install dependencies with `npm ci`
+# 4. Run `npm run build:pages` which calls `vite build` with the base path set
+#    to /smart-object-foundations-aistudiodemo/ so all asset URLs are correct
+#    for the GitHub Pages project-page URL structure
+# 5. Upload the compiled `dist/` folder as a Pages artifact
+# 6. Deploy to GitHub Pages
+#
+# ENABLING GITHUB PAGES
+# ---------------------
+# In the repository settings → Pages → Source, select
+# "GitHub Actions" (not "Deploy from a branch"). This workflow handles
+# everything after that.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+
+# Allow only one concurrent deployment; cancel any in-progress run so the
+# latest commit is always what ends up live.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+# Grant the workflow the minimum permissions required by the Pages deploy action.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Build and deploy
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (with GitHub Pages base path)
+        run: npm run build:pages
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Upload the Vite build output
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
