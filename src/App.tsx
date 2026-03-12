@@ -1,10 +1,73 @@
+// =============================================================================
+// File:    App.tsx
+// Project: Smart Object Foundations — MDes Prototyping, CCA
+// Demo:    AI Studio — Heartbeat Detection + Stress Analysis
+//
+// Authors: Copilot
+//          Thomas J McLeish
+// License: MIT — see LICENSE in the root of this repository
+// =============================================================================
+//
+// Root React component. Owns all top-level UI state and communicates with the
+// Express back-end to persist and display reading history.
+//
+// LAYOUT OVERVIEW
+// ---------------
+//   <header>   — sticky nav bar: app name, connection status badge, history toggle
+//   <main>
+//     left (8 cols)  — <HeartbeatMonitor> canvas + Signal Confidence + Heart Rate cards
+//     right (4 cols) — Stress Analysis panel + System Info + Biometric Insights
+//   <footer>   — attribution line
+//   <AnimatePresence> — history overlay (modal) shown when showHistory is true
+//
+// DATA FLOW
+// ---------
+//   HeartbeatMonitor detects a peak → calls onDataUpdate(bpm, confidence, stressScore)
+//     → App updates signal state → re-renders stat cards
+//     → App randomly persists (5 % chance per peak) via POST /api/readings
+//     → App refreshes history list via GET /api/history
+
 import React, { useState, useEffect } from 'react';
 import { HeartbeatMonitor } from './components/HeartbeatMonitor';
-import { Heart, Activity, Brain, History, Info, AlertTriangle, TrendingUp, ShieldCheck } from 'lucide-react';
+import { Heart, Activity, Brain, History, Info, TrendingUp, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { HeartbeatReading, SignalState } from './types';
 
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/**
+ * Maps a 0–100 stress score to a display label and Tailwind colour tokens.
+ *
+ * Thresholds mirror those described in the Stage 3 README:
+ * - < 30  → Calm        (emerald)
+ * - 30–59 → Moderate    (amber)
+ * - ≥ 60  → High Stress (rose)
+ *
+ * @param score - Stress index in the range 0–100.
+ * @returns An object with a human-readable `label`, a Tailwind text `color`
+ *          class, and a Tailwind background `bg` class.
+ */
+const getStressLevel = (score: number): { label: string; color: string; bg: string } => {
+  if (score < 30) return { label: 'Calm',       color: 'text-emerald-400', bg: 'bg-emerald-400/10' };
+  if (score < 60) return { label: 'Moderate',   color: 'text-amber-400',   bg: 'bg-amber-400/10'   };
+  return             { label: 'High Stress', color: 'text-rose-400',    bg: 'bg-rose-400/10'    };
+};
+
+// =============================================================================
+// COMPONENT
+// =============================================================================
+
+/**
+ * Root application component.
+ *
+ * Manages WebSerial connection state (via callbacks from {@link HeartbeatMonitor}),
+ * live signal metrics, and the persistent reading history loaded from the
+ * Express API.
+ */
 export default function App() {
+  /** Live biometric signal state updated on every detected heartbeat peak. */
   const [signal, setSignal] = useState<SignalState>({
     bpm: 0,
     confidence: 0,
@@ -13,13 +76,22 @@ export default function App() {
     status: "Not connected",
   });
 
+  /** Most-recent readings fetched from `GET /api/history`. */
   const [history, setHistory] = useState<HeartbeatReading[]>([]);
+
+  /** Controls whether the full-screen history overlay is visible. */
   const [showHistory, setShowHistory] = useState(false);
 
+  // Load history on first render.
   useEffect(() => {
     fetchHistory();
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // API
+  // ---------------------------------------------------------------------------
+
+  /** Fetches the 100 most-recent readings from the Express back-end. */
   const fetchHistory = async () => {
     try {
       const res = await fetch('/api/history');
@@ -30,10 +102,27 @@ export default function App() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // Callbacks passed to HeartbeatMonitor
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Called by {@link HeartbeatMonitor} on every newly detected heartbeat peak.
+   * Updates the live stat cards and — with a 5 % probability — persists the
+   * reading to the database and refreshes the history list.
+   *
+   * The probabilistic save rate (~5 readings per 100 peaks) keeps the database
+   * from filling up during a long session while still producing a meaningful
+   * trend over time.
+   *
+   * @param bpm         - Current heart rate in beats per minute.
+   * @param confidence  - Signal confidence (0.0–1.0).
+   * @param stressScore - Stress index (0–100).
+   */
   const handleDataUpdate = async (bpm: number, confidence: number, stressScore: number) => {
     setSignal(prev => ({ ...prev, bpm, confidence, stressScore }));
-    
-    // Save to backend every few seconds or on significant change
+
+    // Save to back-end occasionally to avoid flooding the database.
     if (Math.random() > 0.95 && bpm > 0) {
       try {
         await fetch('/api/readings', {
@@ -48,21 +137,26 @@ export default function App() {
     }
   };
 
+  /**
+   * Called by {@link HeartbeatMonitor} whenever the WebSerial connection state
+   * changes (connect, disconnect, or error).
+   *
+   * @param isConnected - `true` if a port is open and data is flowing.
+   * @param status      - Human-readable status string for the header badge.
+   */
   const handleStatusChange = (isConnected: boolean, status: string) => {
     setSignal(prev => ({ ...prev, isConnected, status }));
   };
 
-  const getStressLevel = (score: number) => {
-    if (score < 30) return { label: 'Calm', color: 'text-emerald-400', bg: 'bg-emerald-400/10' };
-    if (score < 60) return { label: 'Moderate', color: 'text-amber-400', bg: 'bg-amber-400/10' };
-    return { label: 'High Stress', color: 'text-rose-400', bg: 'bg-rose-400/10' };
-  };
-
   const stress = getStressLevel(signal.stressScore);
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
 
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-blue-500/30">
-      {/* Header */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <header className="border-b border-white/5 bg-black/50 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -76,13 +170,15 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-6">
+            {/* Connection status badge */}
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
               <div className={`w-2 h-2 rounded-full ${signal.isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
               <span className="text-xs font-medium text-white/60">{signal.status}</span>
             </div>
-            <button 
+            <button
               onClick={() => setShowHistory(!showHistory)}
               className="p-2 hover:bg-white/5 rounded-full transition-colors text-white/60 hover:text-white"
+              aria-label="Toggle reading history"
             >
               <History size={20} />
             </button>
@@ -90,10 +186,11 @@ export default function App() {
         </div>
       </header>
 
+      {/* ── Main content ───────────────────────────────────────────────────── */}
       <main className="max-w-7xl mx-auto px-6 py-12">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          
-          {/* Main Visualization */}
+
+          {/* ── Left column: waveform + stat cards ─────────────────────────── */}
           <div className="lg:col-span-8 space-y-8">
             <section>
               <div className="flex items-center justify-between mb-6">
@@ -103,13 +200,15 @@ export default function App() {
                 </h2>
                 <div className="text-[10px] font-mono text-white/20">500 SAMPLES @ 100HZ</div>
               </div>
-              <HeartbeatMonitor 
+              {/* Canvas visualisation + WebSerial connection button */}
+              <HeartbeatMonitor
                 onDataUpdate={handleDataUpdate}
                 onStatusChange={handleStatusChange}
               />
             </section>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Signal Confidence card */}
               <div className="p-6 rounded-2xl bg-white/5 border border-white/10 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Signal Confidence</h3>
@@ -119,8 +218,9 @@ export default function App() {
                   <span className="text-4xl font-light">{(signal.confidence * 100).toFixed(0)}</span>
                   <span className="text-lg text-white/40">%</span>
                 </div>
+                {/* Progress bar */}
                 <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
-                  <motion.div 
+                  <motion.div
                     className={`h-full ${signal.confidence > 0.7 ? 'bg-emerald-500' : 'bg-amber-500'}`}
                     initial={{ width: 0 }}
                     animate={{ width: `${signal.confidence * 100}%` }}
@@ -128,6 +228,7 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Heart Rate card */}
               <div className="p-6 rounded-2xl bg-white/5 border border-white/10 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Heart Rate</h3>
@@ -137,13 +238,14 @@ export default function App() {
                   <span className="text-4xl font-light">{signal.bpm > 0 ? signal.bpm.toFixed(0) : '--'}</span>
                   <span className="text-lg text-white/40">BPM</span>
                 </div>
-                <p className="text-[10px] text-white/30 italic">Average resting: 60-100 BPM</p>
+                <p className="text-[10px] text-white/30 italic">Average resting: 60–100 BPM</p>
               </div>
             </div>
           </div>
 
-          {/* Sidebar Stats */}
+          {/* ── Right column: stress panel + info cards ─────────────────────── */}
           <div className="lg:col-span-4 space-y-8">
+            {/* Stress Analysis panel — background tints with stress level */}
             <section className={`p-8 rounded-3xl border border-white/10 transition-colors duration-500 ${stress.bg}`}>
               <div className="flex items-center gap-3 mb-8">
                 <Brain className={stress.color} size={24} />
@@ -162,7 +264,7 @@ export default function App() {
 
                 <div className="pt-6 border-t border-white/10">
                   <p className="text-sm text-white/60 leading-relaxed">
-                    {signal.stressScore < 30 
+                    {signal.stressScore < 30
                       ? "Your heart rate variability and rhythm suggest a state of deep relaxation."
                       : signal.stressScore < 60
                       ? "Moderate physiological activity detected. Maintain steady breathing."
@@ -172,6 +274,7 @@ export default function App() {
               </div>
             </section>
 
+            {/* System Info card */}
             <section className="p-6 rounded-2xl bg-white/5 border border-white/10">
               <h3 className="text-xs font-bold uppercase tracking-wider text-white/40 mb-4 flex items-center gap-2">
                 <Info size={14} />
@@ -193,6 +296,7 @@ export default function App() {
               </ul>
             </section>
 
+            {/* Biometric Insights card */}
             <section className="p-6 rounded-2xl bg-white/5 border border-white/10 space-y-6">
               <h3 className="text-xs font-bold uppercase tracking-wider text-white/40 flex items-center gap-2">
                 <TrendingUp size={14} />
@@ -202,13 +306,13 @@ export default function App() {
                 <div>
                   <h4 className="text-xs font-semibold text-white/80 mb-1">Heart Rate (BPM)</h4>
                   <p className="text-[11px] text-white/50 leading-relaxed">
-                    Beats Per Minute measures your heart's activity. A resting heart rate between 60-100 BPM is typical for adults. Lower rates often indicate better cardiovascular fitness.
+                    Beats Per Minute measures your heart's activity. A resting heart rate between 60–100 BPM is typical for adults. Lower rates often indicate better cardiovascular fitness.
                   </p>
                 </div>
                 <div>
                   <h4 className="text-xs font-semibold text-white/80 mb-1">Stress Analysis</h4>
                   <p className="text-[11px] text-white/50 leading-relaxed">
-                    Our algorithm analyzes Heart Rate Variability (HRV) and rhythm stability. High stress scores often correlate with high BPM and irregular intervals, suggesting physiological arousal.
+                    The algorithm analyses Heart Rate Variability (HRV) and rhythm stability. High stress scores correlate with elevated BPM and irregular inter-beat intervals, suggesting physiological arousal.
                   </p>
                 </div>
               </div>
@@ -216,17 +320,17 @@ export default function App() {
           </div>
         </div>
 
-        {/* History Overlay */}
+        {/* ── History overlay ─────────────────────────────────────────────── */}
         <AnimatePresence>
           {showHistory && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
               className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm"
               onClick={() => setShowHistory(false)}
             >
-              <div 
+              <div
                 className="w-full max-w-2xl bg-[#0a0a0a] border border-white/10 rounded-3xl overflow-hidden shadow-2xl"
                 onClick={e => e.stopPropagation()}
               >
@@ -235,7 +339,7 @@ export default function App() {
                     <History size={20} />
                     Reading History
                   </h2>
-                  <button onClick={() => setShowHistory(false)} className="text-white/40 hover:text-white">✕</button>
+                  <button onClick={() => setShowHistory(false)} className="text-white/40 hover:text-white" aria-label="Close history">✕</button>
                 </div>
                 <div className="max-h-[60vh] overflow-y-auto p-6">
                   {history.length === 0 ? (
@@ -273,10 +377,19 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Footer */}
+      {/* ── Footer ─────────────────────────────────────────────────────────── */}
       <footer className="max-w-7xl mx-auto px-6 py-12 border-t border-white/5 text-center">
         <p className="text-xs text-white/20 tracking-widest uppercase">
-          Designed for Smart Object Foundations — MDes Prototyping
+          Built on{' '}
+          <a
+            href="https://github.com/tj60647/smart-object-foundations"
+            className="underline underline-offset-2 hover:text-white/40 transition-colors"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Smart Object Foundations
+          </a>
+          {' '}— MDes Prototyping, CCA
         </p>
       </footer>
     </div>
