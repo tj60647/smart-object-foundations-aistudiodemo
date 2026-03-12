@@ -151,11 +151,13 @@ interface HeartbeatMonitorProps {
 
 /**
  * Connects to an ESP32 via WebSerial, runs the five-step heartbeat-detection
- * pipeline on each incoming sample, and renders a real-time dual-trace canvas:
- * - **Cyan (top half)** — raw 12-bit ADC values
- * - **Amber (bottom half)** — baseline-subtracted + smoothed signal
- * - **Rose tick marks** — detected heartbeat peaks
- * - **Dashed white line** — current adaptive threshold
+ * pipeline on each incoming sample, and renders a real-time four-panel canvas —
+ * one panel per pipeline stage:
+ * - **Cyan   (panel 0)** — Stage 0: raw 12-bit ADC values (0–4095)
+ * - **Green  (panel 1)** — Stage 1: DC-free signal after background subtraction
+ * - **Amber  (panel 2)** — Stage 2: smoothed signal (moving avg)
+ *   with a dashed white adaptive threshold and rose beat tick marks
+ * - **Violet (panel 3)** — Stage 3: derivative (slope) signal
  */
 export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate, onStatusChange }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -169,8 +171,12 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
 
   /** Rolling display buffer for the raw ADC signal (0–4095). */
   const rawBuffer = useRef<number[]>(new Array(BUFFER_SIZE).fill(2047.5));
-  /** Rolling display buffer for the cleaned (DC-free, smoothed) signal. */
+  /** Rolling display buffer for the DC-free signal (Step 1: background subtraction). */
+  const dcFreeBuffer = useRef<number[]>(new Array(BUFFER_SIZE).fill(0));
+  /** Rolling display buffer for the cleaned (DC-free, smoothed) signal (Step 2). */
   const smoothedBuffer = useRef<number[]>(new Array(BUFFER_SIZE).fill(0));
+  /** Rolling display buffer for the derivative (slope) signal (Step 3). */
+  const derivBuffer = useRef<number[]>(new Array(BUFFER_SIZE).fill(0));
 
   // Step 1 — background subtraction
   /** Rolling window of raw samples used to estimate the DC baseline. */
@@ -303,6 +309,10 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
     baselineSum.current += raw;
     const dc = raw - baselineSum.current / BASELINE_N;
 
+    // Store Stage 1 output for visualisation.
+    dcFreeBuffer.current.push(dc);
+    dcFreeBuffer.current.shift();
+
     // Step 2 — Smoothing (low-pass filter effect).
     // A moving average of SMOOTH_N samples blurs out high-frequency jitter
     // while preserving the shape of each heartbeat peak.
@@ -318,6 +328,10 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
     // The transition from positive to negative slope (zero-crossing) marks
     // the moment the signal peaks.
     const slope = sm - prevSmoothed.current;
+
+    // Store Stage 3 output for visualisation.
+    derivBuffer.current.push(slope);
+    derivBuffer.current.shift();
 
     // Step 4 — Peak detection (adaptive threshold + refractory period).
     const isPeakCandidate = prevSlope.current > 0 && slope <= 0;
@@ -409,14 +423,15 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
   // ── Canvas animation loop ──────────────────────────────────────────────────
 
   /**
-   * Starts a `requestAnimationFrame` render loop that draws the dual-trace
+   * Starts a `requestAnimationFrame` render loop that draws the four-panel
    * waveform onto the canvas at the browser's display refresh rate (~60 fps).
    *
-   * The canvas is divided horizontally:
-   * - **Top half** — raw 12-bit ADC trace (cyan), scaled to 0–4095.
-   * - **Bottom half** — cleaned signal trace (amber), scaled to ±400.
-   *   A dashed white threshold line shows the current adaptive detection level.
-   *   Rose vertical ticks mark the position of each stored heartbeat peak.
+   * The canvas is divided into four equal horizontal panels, one per pipeline stage:
+   * - **Panel 0 — cyan**   — Stage 0: raw 12-bit ADC values (0–4095)
+   * - **Panel 1 — green**  — Stage 1: DC-free signal (background subtracted, ±600)
+   * - **Panel 2 — amber**  — Stage 2: smoothed signal (moving avg, ±400)
+   *   with a dashed white adaptive threshold line and rose beat tick marks
+   * - **Panel 3 — violet** — Stage 3: derivative / slope signal (±60)
    *
    * Cleanup cancels the animation frame and disconnects the serial port.
    */
@@ -428,9 +443,9 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
     if (!ctx) return;
 
     const render = () => {
-      const w     = canvas.width;
-      const h     = canvas.height;
-      const halfH = h / 2;
+      const w      = canvas.width;
+      const h      = canvas.height;
+      const panelH = h / 4;   // four equal panels
 
       // Background
       ctx.fillStyle = '#050505';
@@ -446,62 +461,129 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
         ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(w, i); ctx.stroke();
       }
 
-      // ── Raw trace (top half) — cyan ───────────────────────────────────────
+      /**
+       * Maps a signal value in [minVal, maxVal] to a y-pixel within the
+       * given panel (0-indexed from the top).  High values → top of panel.
+       * When minVal === maxVal the panel midpoint is returned.
+       */
+      const mapToPanel = (value: number, minVal: number, maxVal: number, panelIdx: number): number => {
+        const pTop    = panelIdx * panelH + 20;
+        const pBottom = (panelIdx + 1) * panelH - 20;
+        if (minVal === maxVal) return (pTop + pBottom) / 2;
+        const ratio   = (value - minVal) / (maxVal - minVal);
+        return pBottom - ratio * (pBottom - pTop);
+      };
+
+      // ── Panel 0: Raw ADC signal (cyan) ───────────────────────────────────
       ctx.strokeStyle = '#22d3ee';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       for (let i = 0; i < rawBuffer.current.length; i++) {
         const x = (i / (BUFFER_SIZE - 1)) * w;
-        const y = ((rawBuffer.current[i] - 0) / (4095 - 0)) * (halfH - 40) + 20;
-        if (i === 0) ctx.moveTo(x, halfH - y);
-        else         ctx.lineTo(x, halfH - y);
+        const y = mapToPanel(rawBuffer.current[i], 0, 4095, 0);
+        if (i === 0) ctx.moveTo(x, y);
+        else         ctx.lineTo(x, y);
       }
       ctx.stroke();
 
-      // ── Smoothed trace (bottom half) — amber ──────────────────────────────
+      // ── Panel 1: DC-free signal / Stage 1 — green ────────────────────────
+      ctx.strokeStyle = '#4ade80';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < dcFreeBuffer.current.length; i++) {
+        const x = (i / (BUFFER_SIZE - 1)) * w;
+        const y = mapToPanel(dcFreeBuffer.current[i], -600, 600, 1);
+        if (i === 0) ctx.moveTo(x, y);
+        else         ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      // Zero reference line
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(0, mapToPanel(0, -600, 600, 1));
+      ctx.lineTo(w, mapToPanel(0, -600, 600, 1));
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // ── Panel 2: Smoothed signal / Stage 2 — amber + peaks + threshold ───
       ctx.strokeStyle = '#fbbf24';
       ctx.lineWidth = 2;
       ctx.beginPath();
       for (let i = 0; i < smoothedBuffer.current.length; i++) {
         const x = (i / (BUFFER_SIZE - 1)) * w;
-        const y = ((smoothedBuffer.current[i] - (-400)) / (400 - (-400))) * (h - halfH - 40) + halfH + 20;
-        if (i === 0) ctx.moveTo(x, h - (y - halfH) - halfH);
-        else         ctx.lineTo(x, h - (y - halfH) - halfH);
+        const y = mapToPanel(smoothedBuffer.current[i], -400, 400, 2);
+        if (i === 0) ctx.moveTo(x, y);
+        else         ctx.lineTo(x, y);
       }
       ctx.stroke();
 
-      // ── Adaptive threshold line — dashed white ────────────────────────────
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      // Adaptive threshold line
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
       ctx.setLineDash([5, 5]);
-      const thresholdY = ((adaptiveThreshold.current - (-400)) / (400 - (-400))) * (h - halfH - 40) + halfH + 20;
       ctx.beginPath();
-      ctx.moveTo(0, h - (thresholdY - halfH) - halfH);
-      ctx.lineTo(w, h - (thresholdY - halfH) - halfH);
+      ctx.moveTo(0, mapToPanel(adaptiveThreshold.current, -400, 400, 2));
+      ctx.lineTo(w, mapToPanel(adaptiveThreshold.current, -400, 400, 2));
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // ── Peak tick marks — rose ────────────────────────────────────────────
+      // Peak tick marks
       ctx.strokeStyle = '#f43f5e';
       ctx.lineWidth = 2;
       peakSampleCounts.current.forEach(ps => {
         const samplesAgo = sampleCount.current - ps;
         if (samplesAgo >= 0 && samplesAgo < BUFFER_SIZE) {
-          const x = ((BUFFER_SIZE - samplesAgo) / (BUFFER_SIZE - 1)) * w;
+          const x     = ((BUFFER_SIZE - samplesAgo) / (BUFFER_SIZE - 1)) * w;
+          const pTop    = mapToPanel(400,  -400, 400, 2);
+          const pBottom = mapToPanel(-400, -400, 400, 2);
           ctx.beginPath();
-          ctx.moveTo(x, halfH + 20);
-          ctx.lineTo(x, h - 20);
+          ctx.moveTo(x, pTop);
+          ctx.lineTo(x, pBottom);
           ctx.stroke();
-          // Small dot at the top of each tick
           ctx.fillStyle = '#f43f5e';
           ctx.beginPath();
-          ctx.arc(x, halfH + 20, 3, 0, Math.PI * 2);
+          ctx.arc(x, pTop, 3, 0, Math.PI * 2);
           ctx.fill();
         }
       });
 
-      // ── Divider between the two panels ───────────────────────────────────
+      // ── Panel 3: Derivative / Stage 3 — violet ───────────────────────────
+      ctx.strokeStyle = '#a78bfa';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < derivBuffer.current.length; i++) {
+        const x = (i / (BUFFER_SIZE - 1)) * w;
+        const y = mapToPanel(derivBuffer.current[i], -60, 60, 3);
+        if (i === 0) ctx.moveTo(x, y);
+        else         ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      // Zero reference line
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(0, mapToPanel(0, -60, 60, 3));
+      ctx.lineTo(w, mapToPanel(0, -60, 60, 3));
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // ── Panel dividers ────────────────────────────────────────────────────
       ctx.strokeStyle = '#222';
-      ctx.beginPath(); ctx.moveTo(0, halfH); ctx.lineTo(w, halfH); ctx.stroke();
+      ctx.lineWidth = 1;
+      for (let p = 1; p < 4; p++) {
+        ctx.beginPath();
+        ctx.moveTo(0, p * panelH);
+        ctx.lineTo(w, p * panelH);
+        ctx.stroke();
+      }
+
+      // ── Panel labels ──────────────────────────────────────────────────────
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.font = '11px monospace';
+      ctx.fillText('STAGE 0 — RAW ADC (0–4095)', 10, 16);
+      ctx.fillText('STAGE 1 — DC-FREE (background subtracted)', 10, panelH + 16);
+      ctx.fillText('STAGE 2 — SMOOTHED (moving avg)  |  ── threshold  ╋ beats', 10, 2 * panelH + 16);
+      ctx.fillText('STAGE 3 — DERIVATIVE (slope)', 10, 3 * panelH + 16);
 
       animationFrameId = requestAnimationFrame(render);
     };
@@ -521,7 +603,7 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       <canvas
         ref={canvasRef}
         width={800}
-        height={400}
+        height={600}
         className="w-full h-auto block"
       />
 
@@ -550,11 +632,19 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       <div className="absolute bottom-4 right-4 flex items-center gap-4 text-[10px] font-mono text-white/20 uppercase tracking-widest">
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-cyan-400" />
-          Raw Signal
+          Raw ADC
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-2 h-2 rounded-full bg-green-400" />
+          DC-Free
         </div>
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-amber-400" />
-          Filtered
+          Smoothed
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-2 h-2 rounded-full bg-violet-400" />
+          Derivative
         </div>
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-rose-400" />
