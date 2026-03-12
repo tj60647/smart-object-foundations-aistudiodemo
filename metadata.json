@@ -1,0 +1,7 @@
+{
+  "name": "Remix: Aura - Stress \u0026 Heart Rate Monitor",
+  "description": "A real-time heartbeat visualization and stress tracking application using WebSerial and advanced signal processing.",
+  "requestFramePermissions": [
+    "serial"
+  ]
+}
