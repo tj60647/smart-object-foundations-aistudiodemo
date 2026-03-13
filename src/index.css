@@ -9,3 +9,127 @@
 body {
   @apply bg-[#050505] text-white antialiased;
 }
+
+@keyframes connectFillPulse {
+  0% {
+    background-color: rgba(37, 99, 235, 0.3);
+  }
+  50% {
+    background-color: rgba(5, 5, 5, 0.95);
+  }
+  100% {
+    background-color: rgba(37, 99, 235, 0.3);
+  }
+}
+
+.connect-fill-animate {
+  animation: connectFillPulse 2.2s ease-in-out infinite;
+}
+
+.theme-light {
+  background-color: #eef4fb;
+  color: #0f172a;
+}
+
+.theme-light .bg-\[\#050505\] {
+  background-color: #eef4fb !important;
+}
+
+.theme-light .bg-\[\#0a0a0a\] {
+  background-color: #ffffff !important;
+}
+
+.theme-light .bg-black\/50,
+.theme-light .bg-black\/70,
+.theme-light .bg-black\/80 {
+  background-color: rgba(236, 245, 255, 0.92) !important;
+}
+
+.theme-light .bg-white\/5 {
+  background-color: rgba(20, 53, 100, 0.07) !important;
+}
+
+.theme-light .bg-white\/10 {
+  background-color: rgba(20, 53, 100, 0.12) !important;
+}
+
+.theme-light .border-white\/5 {
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+
+.theme-light .border-white\/10 {
+  border-color: rgba(15, 23, 42, 0.18) !important;
+}
+
+.theme-light .text-white,
+.theme-light .text-white\/80,
+.theme-light .text-white\/60,
+.theme-light .text-white\/50,
+.theme-light .text-white\/40,
+.theme-light .text-white\/30,
+.theme-light .text-white\/20 {
+  color: #1e293b !important;
+}
+
+.theme-light .connect-fill-animate {
+  animation: connectFillPulseLight 2.2s ease-in-out infinite;
+}
+
+.theme-light .connect-primary-disconnected {
+  border-color: rgba(37, 99, 235, 0.75) !important;
+  color: #0b2a57 !important;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
+}
+
+.theme-light .connect-primary-disconnected:hover {
+  color: #0a1d3c !important;
+}
+
+.theme-light .connect-primary-connected {
+  color: #0f2f58 !important;
+}
+
+.theme-light .connect-primary-connected:hover {
+  color: #0a1d3c !important;
+}
+
+.theme-light .source-toggle-button {
+  color: #0f2f58 !important;
+  border-color: rgba(15, 47, 88, 0.35) !important;
+  background-color: rgba(37, 99, 235, 0.12) !important;
+}
+
+.theme-light .source-toggle-button:hover {
+  color: #0a1d3c !important;
+  background-color: rgba(37, 99, 235, 0.2) !important;
+}
+
+.footer-meta {
+  opacity: 0.78;
+}
+
+.footer-link {
+  opacity: 0.88;
+}
+
+.theme-light .footer-meta {
+  color: rgba(30, 41, 59, 0.58) !important;
+  opacity: 1;
+}
+
+.theme-light .footer-link {
+  color: rgba(30, 64, 175, 0.72) !important;
+  opacity: 1;
+}
+
+@keyframes connectFillPulseLight {
+  0% {
+    background-color: rgba(59, 130, 246, 0.62);
+  }
+  50% {
+    background-color: rgba(147, 197, 253, 0.5);
+  }
+  100% {
+    background-color: rgba(59, 130, 246, 0.62);
+  }
+}

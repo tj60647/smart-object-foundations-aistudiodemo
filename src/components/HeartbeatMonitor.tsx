@@ -71,7 +71,6 @@
 // Click "Connect Sensor" in the UI to open the WebSerial port.
 
 import React, { useEffect, useRef } from 'react';
-import { Activity, Zap } from 'lucide-react';
 
 // =============================================================================
 // CONSTANTS
@@ -143,7 +142,24 @@ interface HeartbeatMonitorProps {
    * @param status    - Human-readable status string.
    */
   onStatusChange: (connected: boolean, status: string) => void;
+  /** Current visual theme so the canvas palette can match app mode. */
+  theme: 'dark' | 'light';
+  /**
+   * Provides connect/disconnect actions to the parent so controls can live
+   * outside the canvas (for example in a sticky header).
+   */
+  onConnectionControlReady?: (controls: {
+    connectSerial: () => Promise<void>;
+    connectBluetooth: () => Promise<void>;
+    disconnect: () => Promise<void>;
+  }) => void;
 }
+
+// BLE UART profiles commonly used by ESP32 and BLE serial bridges.
+const BLE_NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const BLE_NUS_TX_CHAR = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const BLE_SPP_SERVICE = 0xffe0;
+const BLE_SPP_CHAR = 0xffe1;
 
 // =============================================================================
 // COMPONENT
@@ -159,11 +175,16 @@ interface HeartbeatMonitorProps {
  *   with a dashed white adaptive threshold and rose beat tick marks
  * - **Violet (panel 3)** — Stage 3: derivative (slope) signal
  */
-export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate, onStatusChange }) => {
+export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate, onStatusChange, onConnectionControlReady, theme }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const portRef   = useRef<any>(null);
   const readerRef = useRef<any>(null);
+  const bleDeviceRef = useRef<any>(null);
+  const bleCharRef = useRef<any>(null);
+  const blePartialRef = useRef<string>('');
+  const bleListenerRef = useRef<((event: Event) => void) | null>(null);
   const keepReading = useRef<boolean>(true);
+  const decoderRef = useRef<TextDecoder>(new TextDecoder());
 
   // ── Signal processing state ────────────────────────────────────────────────
   // All processing state is kept in refs (not useState) so that the 100 Hz
@@ -214,16 +235,55 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
    * Closes the WebSerial port and cleans up the reader.
    * Safe to call even if the port was never opened.
    */
+  const handleIncomingLine = (line: string) => {
+    const parts = line.trim().split(',');
+    // Expected format: "timestamp,value" — we only use the value.
+    if (parts.length === 2) {
+      const val = parseInt(parts[1]);
+      if (!isNaN(val)) processSample(val);
+    }
+  };
+
   const disconnectSerial = async () => {
     keepReading.current = false;
     if (readerRef.current) {
       await readerRef.current.cancel();
+      readerRef.current = null;
     }
     if (portRef.current) {
       await portRef.current.close();
       portRef.current = null;
     }
-    onStatusChange(false, "Disconnected");
+  };
+
+  const disconnectBluetooth = async () => {
+    const characteristic = bleCharRef.current;
+    const listener = bleListenerRef.current;
+    if (characteristic && listener) {
+      characteristic.removeEventListener('characteristicvaluechanged', listener);
+    }
+    if (characteristic) {
+      try {
+        await characteristic.stopNotifications();
+      } catch {
+        // Ignore notification stop errors while disconnecting.
+      }
+    }
+    bleCharRef.current = null;
+    bleListenerRef.current = null;
+    blePartialRef.current = '';
+
+    const device = bleDeviceRef.current;
+    if (device?.gatt?.connected) {
+      device.gatt.disconnect();
+    }
+    bleDeviceRef.current = null;
+  };
+
+  const disconnectAll = async () => {
+    await disconnectSerial();
+    await disconnectBluetooth();
+    onStatusChange(false, 'Disconnected');
   };
 
   /**
@@ -241,13 +301,85 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       port.readable.pipeTo(decoder.writable);
       readerRef.current = decoder.readable.getReader();
 
-      onStatusChange(true, "Connected");
+      onStatusChange(true, 'Connected (Serial)');
       readLoop();
     } catch (err) {
-      onStatusChange(false, "Connection failed. Please try again.");
+      onStatusChange(false, 'Serial connection failed.');
       console.error(err);
     }
   };
+
+  const connectBluetooth = async () => {
+    if (!(navigator as any).bluetooth) {
+      onStatusChange(false, 'Bluetooth not supported in this browser.');
+      return;
+    }
+
+    try {
+      await disconnectAll();
+
+      const device = await (navigator as any).bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [BLE_NUS_SERVICE, BLE_SPP_SERVICE],
+      });
+      bleDeviceRef.current = device;
+
+      const server = await device.gatt?.connect();
+      if (!server) {
+        onStatusChange(false, 'Bluetooth GATT connection failed.');
+        return;
+      }
+
+      let characteristic: any = null;
+
+      try {
+        const nusService = await server.getPrimaryService(BLE_NUS_SERVICE);
+        characteristic = await nusService.getCharacteristic(BLE_NUS_TX_CHAR);
+      } catch {
+        const sppService = await server.getPrimaryService(BLE_SPP_SERVICE);
+        characteristic = await sppService.getCharacteristic(BLE_SPP_CHAR);
+      }
+
+      if (!characteristic) {
+        onStatusChange(false, 'Bluetooth stream characteristic not found.');
+        return;
+      }
+
+      bleCharRef.current = characteristic;
+      blePartialRef.current = '';
+
+      const notificationHandler = (event: Event) => {
+        const target = event.target as any;
+        const value = target.value;
+        if (!value) return;
+
+        const chunk = decoderRef.current.decode(value.buffer);
+        blePartialRef.current += chunk;
+
+        const lines = blePartialRef.current.split('\n');
+        blePartialRef.current = lines.pop() || '';
+        lines.forEach(handleIncomingLine);
+      };
+
+      bleListenerRef.current = notificationHandler;
+      characteristic.addEventListener('characteristicvaluechanged', notificationHandler);
+      await characteristic.startNotifications();
+
+      onStatusChange(true, 'Connected (Bluetooth)');
+    } catch (err) {
+      onStatusChange(false, 'Bluetooth connection failed.');
+      console.error(err);
+    }
+  };
+
+  // Expose connection controls to the parent UI.
+  useEffect(() => {
+    onConnectionControlReady?.({
+      connectSerial,
+      connectBluetooth,
+      disconnect: disconnectAll,
+    });
+  }, [onConnectionControlReady]);
 
   /**
    * Continuously reads lines from the serial port and dispatches each
@@ -270,12 +402,7 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
         partial = lines.pop() || "";
 
         for (const line of lines) {
-          const parts = line.trim().split(",");
-          // Expected format: "timestamp,value" — we only use the value.
-          if (parts.length === 2) {
-            const val = parseInt(parts[1]);
-            if (!isNaN(val)) processSample(val);
-          }
+          handleIncomingLine(line);
         }
       } catch (err) {
         if (keepReading.current) {
@@ -447,12 +574,30 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       const h      = canvas.height;
       const panelH = h / 4;   // four equal panels
 
+      const palette = theme === 'dark'
+        ? {
+            background: '#050505',
+            grid: '#111',
+            zero: 'rgba(255, 255, 255, 0.08)',
+            threshold: 'rgba(255, 255, 255, 0.15)',
+            divider: '#222',
+            label: 'rgba(255, 255, 255, 0.25)',
+          }
+        : {
+            background: '#f3f7fb',
+            grid: '#d4dde7',
+            zero: 'rgba(15, 23, 42, 0.18)',
+            threshold: 'rgba(15, 23, 42, 0.3)',
+            divider: '#c0ccd9',
+            label: 'rgba(15, 23, 42, 0.55)',
+          };
+
       // Background
-      ctx.fillStyle = '#050505';
+      ctx.fillStyle = palette.background;
       ctx.fillRect(0, 0, w, h);
 
       // Subtle grid
-      ctx.strokeStyle = '#111';
+      ctx.strokeStyle = palette.grid;
       ctx.lineWidth = 1;
       for (let i = 0; i < w; i += 50) {
         ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, h); ctx.stroke();
@@ -498,7 +643,7 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       }
       ctx.stroke();
       // Zero reference line
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.strokeStyle = palette.zero;
       ctx.setLineDash([5, 5]);
       ctx.beginPath();
       ctx.moveTo(0, mapToPanel(0, -600, 600, 1));
@@ -519,7 +664,7 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       ctx.stroke();
 
       // Adaptive threshold line
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.strokeStyle = palette.threshold;
       ctx.setLineDash([5, 5]);
       ctx.beginPath();
       ctx.moveTo(0, mapToPanel(adaptiveThreshold.current, -400, 400, 2));
@@ -559,7 +704,7 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       }
       ctx.stroke();
       // Zero reference line
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.strokeStyle = palette.zero;
       ctx.setLineDash([5, 5]);
       ctx.beginPath();
       ctx.moveTo(0, mapToPanel(0, -60, 60, 3));
@@ -568,7 +713,7 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       ctx.setLineDash([]);
 
       // ── Panel dividers ────────────────────────────────────────────────────
-      ctx.strokeStyle = '#222';
+      ctx.strokeStyle = palette.divider;
       ctx.lineWidth = 1;
       for (let p = 1; p < 4; p++) {
         ctx.beginPath();
@@ -578,7 +723,7 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
       }
 
       // ── Panel labels ──────────────────────────────────────────────────────
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.fillStyle = palette.label;
       ctx.font = '11px monospace';
       ctx.fillText('STAGE 0 — RAW ADC (0–4095)', 10, 16);
       ctx.fillText('STAGE 1 — DC-FREE (background subtracted)', 10, panelH + 16);
@@ -592,9 +737,11 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
 
     return () => {
       cancelAnimationFrame(animationFrameId);
-      if (portRef.current) disconnectSerial();
+      if (portRef.current || bleDeviceRef.current) {
+        void disconnectAll();
+      }
     };
-  }, []);
+  }, [theme]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -602,34 +749,13 @@ export const HeartbeatMonitor: React.FC<HeartbeatMonitorProps> = ({ onDataUpdate
     <div className="relative w-full bg-[#0a0a0a] rounded-2xl overflow-hidden border border-white/5 shadow-2xl group">
       <canvas
         ref={canvasRef}
-        width={800}
-        height={600}
+        width={1200}
+        height={760}
         className="w-full h-auto block"
       />
 
-      {/* Connect / Disconnect button */}
-      <div className="absolute top-4 left-4 flex gap-3">
-        {!portRef.current ? (
-          <button
-            onClick={connectSerial}
-            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold transition-all flex items-center gap-2 shadow-lg shadow-blue-600/20 active:scale-95"
-          >
-            <Zap size={18} fill="currentColor" />
-            Connect Sensor
-          </button>
-        ) : (
-          <button
-            onClick={disconnectSerial}
-            className="px-5 py-2.5 bg-white/10 hover:bg-rose-600/20 hover:text-rose-400 text-white/80 rounded-xl font-semibold transition-all flex items-center gap-2 border border-white/10 active:scale-95"
-          >
-            <Activity size={18} />
-            Disconnect
-          </button>
-        )}
-      </div>
-
       {/* Trace legend */}
-      <div className="absolute bottom-4 right-4 flex items-center gap-4 text-[10px] font-mono text-white/20 uppercase tracking-widest">
+      <div className="absolute bottom-3 right-3 hidden md:flex items-center gap-3 text-[9px] font-mono text-white/20 uppercase tracking-widest">
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-cyan-400" />
           Raw ADC

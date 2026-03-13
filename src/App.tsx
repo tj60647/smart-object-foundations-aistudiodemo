@@ -29,10 +29,71 @@
 
 import React, { useState, useEffect } from 'react';
 import { HeartbeatMonitor } from './components/HeartbeatMonitor';
-import { Heart, Activity, Brain, History, Info, TrendingUp, ShieldCheck } from 'lucide-react';
+import { Heart, Activity, Brain, History, Info, TrendingUp, ShieldCheck, Zap, Sun, Moon, Bluetooth, Usb, Sparkles, Cpu } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { HeartbeatReading, SignalState } from './types';
 import { loadHistory, saveReading } from './storage';
+
+type PanelInfoKey = 'stream' | 'confidence' | 'heartRate' | 'stress' | 'system' | 'insights';
+type ThemeMode = 'dark' | 'light';
+type ConnectionMode = 'serial' | 'bluetooth';
+
+type ConnectionControls = {
+  connectSerial: () => Promise<void>;
+  connectBluetooth: () => Promise<void>;
+  disconnect: () => Promise<void>;
+};
+
+const PANEL_INFO: Record<PanelInfoKey, {
+  title: string;
+  summary: string;
+  meaning: string;
+  tip: string;
+  caution: string;
+}> = {
+  stream: {
+    title: 'Live Biometric Stream',
+    summary: 'The graph displays each processing stage from raw input to derivative peaks in real time.',
+    meaning: 'Use this panel first when troubleshooting. If Stage 0 is flat or noisy, downstream BPM and stress values will also be unstable.',
+    tip: 'For clean traces, keep finger pressure steady and avoid moving the sensor cable during measurement.',
+    caution: 'This visualization is a teaching aid and should not be interpreted as a clinical waveform.',
+  },
+  confidence: {
+    title: 'Signal Confidence',
+    summary: 'Confidence estimates beat detection reliability using rhythm consistency across recent intervals.',
+    meaning: 'Higher percentages generally indicate stable sampling and accurate peak timing.',
+    tip: 'If confidence is low, reconnect the sensor and hold still for 10–15 seconds before reading trends.',
+    caution: 'High confidence does not guarantee medical-grade precision; it only reflects internal signal regularity.',
+  },
+  heartRate: {
+    title: 'Heart Rate',
+    summary: 'BPM is calculated from inter-beat intervals after removing implausible outlier timings.',
+    meaning: 'Values near zero during startup usually mean the app has not yet captured enough valid peaks.',
+    tip: 'Wait for confidence to stabilize before comparing BPM across activities or people.',
+    caution: 'Short spikes can occur if the signal contains motion artifacts or double detections.',
+  },
+  stress: {
+    title: 'Stress Analysis',
+    summary: 'Stress score combines elevated BPM and rhythm variability into a 0–100 classroom index.',
+    meaning: 'Use it to compare relative physiological arousal between moments, not as an absolute diagnosis.',
+    tip: 'Track direction of change over time instead of focusing on a single instant value.',
+    caution: 'This metric is educational and not intended for clinical stress assessment.',
+  },
+  system: {
+    title: 'System Info',
+    summary: 'This card lists current sampling and filtering settings used by the signal pipeline.',
+    meaning: 'Sample rate and filter windows directly influence responsiveness, noise tolerance, and stability.',
+    tip: 'If signals look too jittery, increase smoothing; if they lag, decrease smoothing window size.',
+    caution: 'Changing filter parameters alters comparability with previously captured sessions.',
+  },
+  insights: {
+    title: 'Biometric Insights',
+    summary: 'Quick reference notes for interpreting BPM, confidence, and stress during demos.',
+    meaning: 'These notes help non-technical audiences connect sensor behavior to body-state patterns.',
+    tip: 'Pair this panel with live graph changes while asking participants to breathe slowly or move.',
+    caution: 'Interpretation guidance is generalized and should not replace professional health advice.',
+  },
+};
 
 // =============================================================================
 // HELPERS
@@ -67,6 +128,9 @@ const getStressLevel = (score: number): { label: string; color: string; bg: stri
  * live signal metrics, and the reading history persisted in localStorage.
  */
 export default function App() {
+  const [themeMode, setThemeMode] = useState<ThemeMode>('dark');
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('serial');
+
   /** Live biometric signal state updated on every detected heartbeat peak. */
   const [signal, setSignal] = useState<SignalState>({
     bpm: 0,
@@ -81,10 +145,19 @@ export default function App() {
 
   /** Controls whether the full-screen history overlay is visible. */
   const [showHistory, setShowHistory] = useState(false);
+  /** Tracks which panel help modal is currently open. */
+  const [activePanelInfo, setActivePanelInfo] = useState<PanelInfoKey | null>(null);
+  /** Connection actions provided by the monitor component. */
+  const [connectionControls, setConnectionControls] = useState<ConnectionControls | null>(null);
 
   // Load history from localStorage on first render.
   useEffect(() => {
     setHistory(loadHistory());
+  }, []);
+
+  useEffect(() => {
+    const preferredLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+    setThemeMode(preferredLight ? 'light' : 'dark');
   }, []);
 
   // ---------------------------------------------------------------------------
@@ -135,26 +208,70 @@ export default function App() {
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-blue-500/30">
+    <div className={`min-h-screen text-white font-sans selection:bg-blue-500/30 flex flex-col ${themeMode === 'light' ? 'theme-light' : ''}`}>
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <header className="border-b border-white/5 bg-black/50 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20">
-              <Activity className="text-white" size={24} />
+            <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20">
+              <Sparkles className="text-white" size={18} />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">AURA</h1>
+              <h1 className="text-lg font-bold tracking-tight">AURA</h1>
               <p className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-semibold">Stress Monitor v1.0</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2 sm:gap-3">
             {/* Connection status badge */}
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
               <div className={`w-2 h-2 rounded-full ${signal.isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
               <span className="text-xs font-medium text-white/60">{signal.status}</span>
             </div>
+            {connectionControls && (
+              <>
+                <button
+                  onClick={() => {
+                    if (signal.isConnected) {
+                      void connectionControls.disconnect();
+                    } else if (connectionMode === 'serial') {
+                      void connectionControls.connectSerial();
+                    } else {
+                      void connectionControls.connectBluetooth();
+                    }
+                  }}
+                  className={`relative flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${
+                    signal.isConnected
+                      ? 'connect-primary-connected bg-white/5 border-white/10 text-white/75 hover:text-white hover:bg-white/10'
+                      : 'connect-fill-animate connect-primary-disconnected border-blue-400/40 text-blue-100 hover:text-white'
+                  }`}
+                  aria-label={signal.isConnected ? 'Disconnect sensor' : 'Connect sensor'}
+                >
+                  <Zap size={14} className={signal.isConnected ? 'text-white/60' : 'text-blue-400'} fill={signal.isConnected ? 'none' : 'currentColor'} />
+                  {signal.isConnected ? 'Disconnect Sensor' : 'Connect Sensor'}
+                </button>
+                <button
+                  onClick={() => setConnectionMode(prev => (prev === 'serial' ? 'bluetooth' : 'serial'))}
+                  className="source-toggle-button w-32 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-full bg-white/5 border border-white/10 text-[11px] font-semibold text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+                  aria-label="Toggle connection source"
+                >
+                  {connectionMode === 'serial' ? <Usb size={13} /> : <Bluetooth size={13} />}
+                  {connectionMode === 'serial' ? 'USB Serial' : 'Bluetooth LE'}
+                </button>
+                {!signal.isConnected && (
+                  <span className="hidden lg:inline text-[10px] font-semibold tracking-wide text-white/50">
+                    Choose source, then Connect
+                  </span>
+                )}
+              </>
+            )}
+            <button
+              onClick={() => setThemeMode(prev => (prev === 'dark' ? 'light' : 'dark'))}
+              className="p-2 hover:bg-white/5 rounded-full transition-colors text-white/60 hover:text-white"
+              aria-label="Toggle theme mode"
+            >
+              {themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
             <button
               onClick={() => setShowHistory(!showHistory)}
               className="p-2 hover:bg-white/5 rounded-full transition-colors text-white/60 hover:text-white"
@@ -167,36 +284,56 @@ export default function App() {
       </header>
 
       {/* ── Main content ───────────────────────────────────────────────────── */}
-      <main className="max-w-7xl mx-auto px-6 py-12">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 lg:py-6 flex-1">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-6 lg:items-stretch">
 
           {/* ── Left column: waveform + stat cards ─────────────────────────── */}
-          <div className="lg:col-span-8 space-y-8">
+          <div className="lg:col-span-8 h-full flex flex-col gap-5 lg:gap-6">
             <section>
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-sm font-semibold uppercase tracking-widest text-white/40 flex items-center gap-2">
-                  <Activity size={16} />
-                  Live Biometric Stream
-                </h2>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xs sm:text-sm font-semibold uppercase tracking-widest text-white/40 flex items-center gap-2">
+                    <Activity size={16} />
+                    Live Biometric Stream
+                  </h2>
+                  <button
+                    onClick={() => setActivePanelInfo('stream')}
+                    className="text-white/40 hover:text-white transition-colors"
+                    aria-label="Open stream panel information"
+                  >
+                    <Info size={14} />
+                  </button>
+                </div>
                 <div className="text-[10px] font-mono text-white/20">500 SAMPLES @ 100HZ</div>
               </div>
               {/* Canvas visualisation + WebSerial connection button */}
               <HeartbeatMonitor
                 onDataUpdate={handleDataUpdate}
                 onStatusChange={handleStatusChange}
+                theme={themeMode}
+                onConnectionControlReady={setConnectionControls}
               />
             </section>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:gap-5">
               {/* Signal Confidence card */}
-              <div className="p-6 rounded-2xl bg-white/5 border border-white/10 space-y-4">
+              <div className="p-5 rounded-2xl bg-white/5 border border-white/10 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Signal Confidence</h3>
-                  <ShieldCheck size={16} className={signal.confidence > 0.7 ? 'text-emerald-400' : 'text-amber-400'} />
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Signal Confidence</h3>
+                    <button
+                      onClick={() => setActivePanelInfo('confidence')}
+                      className="text-white/40 hover:text-white transition-colors"
+                      aria-label="Open signal confidence panel information"
+                    >
+                      <Info size={13} />
+                    </button>
+                  </div>
+                  <ShieldCheck size={15} className={signal.confidence > 0.7 ? 'text-emerald-400' : 'text-amber-400'} />
                 </div>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-4xl font-light">{(signal.confidence * 100).toFixed(0)}</span>
-                  <span className="text-lg text-white/40">%</span>
+                  <span className="text-3xl lg:text-4xl font-light">{(signal.confidence * 100).toFixed(0)}</span>
+                  <span className="text-base text-white/40">%</span>
                 </div>
                 {/* Progress bar */}
                 <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
@@ -209,14 +346,23 @@ export default function App() {
               </div>
 
               {/* Heart Rate card */}
-              <div className="p-6 rounded-2xl bg-white/5 border border-white/10 space-y-4">
+              <div className="p-5 rounded-2xl bg-white/5 border border-white/10 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Heart Rate</h3>
-                  <Heart size={16} className="text-rose-500 animate-pulse" />
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-white/40">Heart Rate</h3>
+                    <button
+                      onClick={() => setActivePanelInfo('heartRate')}
+                      className="text-white/40 hover:text-white transition-colors"
+                      aria-label="Open heart rate panel information"
+                    >
+                      <Info size={13} />
+                    </button>
+                  </div>
+                  <Heart size={15} className="text-rose-500 animate-pulse" />
                 </div>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-4xl font-light">{signal.bpm > 0 ? signal.bpm.toFixed(0) : '--'}</span>
-                  <span className="text-lg text-white/40">BPM</span>
+                  <span className="text-3xl lg:text-4xl font-light">{signal.bpm > 0 ? signal.bpm.toFixed(0) : '--'}</span>
+                  <span className="text-base text-white/40">BPM</span>
                 </div>
                 <p className="text-[10px] text-white/30 italic">Average resting: 60–100 BPM</p>
               </div>
@@ -224,26 +370,35 @@ export default function App() {
           </div>
 
           {/* ── Right column: stress panel + info cards ─────────────────────── */}
-          <div className="lg:col-span-4 space-y-8">
+          <div className="lg:col-span-4 lg:h-full flex flex-col gap-5 lg:gap-6">
             {/* Stress Analysis panel — background tints with stress level */}
-            <section className={`p-8 rounded-3xl border border-white/10 transition-colors duration-500 ${stress.bg}`}>
-              <div className="flex items-center gap-3 mb-8">
-                <Brain className={stress.color} size={24} />
-                <h2 className="text-sm font-bold uppercase tracking-widest opacity-60">Stress Analysis</h2>
+            <section className={`p-6 rounded-2xl border border-white/10 transition-colors duration-500 lg:flex-1 ${stress.bg}`}>
+              <div className="flex items-center gap-3 mb-4 justify-between">
+                <div className="flex items-center gap-3">
+                  <Brain className={stress.color} size={20} />
+                  <h2 className="text-xs sm:text-sm font-bold uppercase tracking-widest opacity-60">Stress Analysis</h2>
+                </div>
+                <button
+                  onClick={() => setActivePanelInfo('stress')}
+                  className="text-white/40 hover:text-white transition-colors"
+                  aria-label="Open stress analysis panel information"
+                >
+                  <Info size={14} />
+                </button>
               </div>
 
-              <div className="space-y-6">
+              <div className="space-y-4">
                 <div>
-                  <div className="text-6xl font-light tracking-tighter mb-2">
+                  <div className="text-5xl lg:text-6xl font-light tracking-tighter mb-1">
                     {signal.stressScore.toFixed(0)}
                   </div>
-                  <div className={`text-xl font-medium ${stress.color}`}>
+                  <div className={`text-lg lg:text-xl font-medium ${stress.color}`}>
                     {stress.label}
                   </div>
                 </div>
 
-                <div className="pt-6 border-t border-white/10">
-                  <p className="text-sm text-white/60 leading-relaxed">
+                <div className="pt-4 border-t border-white/10">
+                  <p className="text-xs sm:text-sm text-white/60 leading-relaxed">
                     {signal.stressScore < 30
                       ? "Your heart rate variability and rhythm suggest a state of deep relaxation."
                       : signal.stressScore < 60
@@ -255,11 +410,20 @@ export default function App() {
             </section>
 
             {/* System Info card */}
-            <section className="p-6 rounded-2xl bg-white/5 border border-white/10">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-white/40 mb-4 flex items-center gap-2">
-                <Info size={14} />
-                System Info
-              </h3>
+            <section className="p-5 rounded-2xl bg-white/5 border border-white/10">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-white/40 flex items-center gap-2">
+                  <Cpu size={14} />
+                  System Info
+                </h3>
+                <button
+                  onClick={() => setActivePanelInfo('system')}
+                  className="text-white/40 hover:text-white transition-colors"
+                  aria-label="Open system info panel information"
+                >
+                  <Info size={13} />
+                </button>
+              </div>
               <ul className="space-y-3 text-xs text-white/50">
                 <li className="flex justify-between">
                   <span>Sample Rate</span>
@@ -277,12 +441,21 @@ export default function App() {
             </section>
 
             {/* Biometric Insights card */}
-            <section className="p-6 rounded-2xl bg-white/5 border border-white/10 space-y-6">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-white/40 flex items-center gap-2">
-                <TrendingUp size={14} />
-                Biometric Insights
-              </h3>
-              <div className="space-y-4">
+            <section className="p-5 rounded-2xl bg-white/5 border border-white/10 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-white/40 flex items-center gap-2">
+                  <TrendingUp size={14} />
+                  Biometric Insights
+                </h3>
+                <button
+                  onClick={() => setActivePanelInfo('insights')}
+                  className="text-white/40 hover:text-white transition-colors"
+                  aria-label="Open biometric insights panel information"
+                >
+                  <Info size={13} />
+                </button>
+              </div>
+              <div className="space-y-3">
                 <div>
                   <h4 className="text-xs font-semibold text-white/80 mb-1">Heart Rate (BPM)</h4>
                   <p className="text-[11px] text-white/50 leading-relaxed">
@@ -355,15 +528,54 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* ── Panel help modal ─────────────────────────────────────────────── */}
+        <AnimatePresence>
+          {activePanelInfo && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+              onClick={() => setActivePanelInfo(null)}
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.98 }}
+                transition={{ duration: 0.18 }}
+                className="w-full max-w-lg bg-[#0a0a0a] border border-white/10 rounded-2xl p-5 shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4 mb-3">
+                  <h3 className="text-base font-semibold tracking-tight">{PANEL_INFO[activePanelInfo].title}</h3>
+                  <button
+                    onClick={() => setActivePanelInfo(null)}
+                    className="text-white/40 hover:text-white transition-colors"
+                    aria-label="Close panel information"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="space-y-3 text-sm text-white/65 leading-relaxed">
+                  <p>{PANEL_INFO[activePanelInfo].summary}</p>
+                  <p><span className="text-white/85 font-semibold">What it means:</span> {PANEL_INFO[activePanelInfo].meaning}</p>
+                  <p><span className="text-white/85 font-semibold">Practical tip:</span> {PANEL_INFO[activePanelInfo].tip}</p>
+                  <p><span className="text-white/85 font-semibold">Limitations:</span> {PANEL_INFO[activePanelInfo].caution}</p>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
 
       {/* ── Footer ─────────────────────────────────────────────────────────── */}
-      <footer className="max-w-7xl mx-auto px-6 py-12 border-t border-white/5 text-center">
-        <p className="text-xs text-white/20 tracking-widest uppercase">
+      <footer className="max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 border-t border-white/5 text-center">
+        <p className="footer-meta text-xs text-white/20 tracking-widest uppercase">
           Built on{' '}
           <a
             href="https://github.com/tj60647/smart-object-foundations"
-            className="underline underline-offset-2 hover:text-white/40 transition-colors"
+            className="footer-link underline underline-offset-2 hover:text-white/40 transition-colors"
             target="_blank"
             rel="noopener noreferrer"
           >
